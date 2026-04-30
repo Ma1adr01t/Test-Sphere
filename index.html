@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>iPhone Motion Ball Test</title>
+  <title>Motion Ball Endless Tilt Demo</title>
   <link rel="stylesheet" href="style.css" />
 
   <script type="importmap">
@@ -16,13 +16,19 @@
 </head>
 <body>
   <div id="ui">
-    <h1>Motion Ball Test</h1>
+    <h1>Motion Ball Tilt Demo</h1>
     <p>
-      Tap the button, allow motion access, then tilt your iPhone to roll the ball.
+      Hold your iPhone however feels comfortable, then tap Start. That angle becomes neutral.
+      Tilt to steer and avoid the holes.
     </p>
-    <button id="enableMotionButton">Enable Motion Controls</button>
-    <button id="resetButton">Reset Ball</button>
-    <p id="status">Motion controls are not enabled yet.</p>
+
+    <div class="button-row">
+      <button id="startButton">Start / Calibrate</button>
+      <button id="resetButton">Reset</button>
+    </div>
+
+    <p id="status">Waiting to start.</p>
+    <p id="distance">Distance: 0</p>
   </div>
 
   <canvas id="gameCanvas"></canvas>
