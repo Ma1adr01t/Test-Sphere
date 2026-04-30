@@ -46,12 +46,11 @@ const game = {
   started: false,
   falling: false,
 
-  rawX: 0,
-  rawY: 0,
+  rawBeta: 0,
+  rawGamma: 0,
 
-  neutralX: 0,
-  neutralY: 0,
-  hasMotionSample: false,
+  neutralBeta: 0,
+  neutralGamma: 0,
 
   calibrating: false,
   calibrationSamples: [],
@@ -64,9 +63,6 @@ const game = {
 
   positionX: 0,
   positionZ: 0,
-
-  highestChunkIndex: 0,
-  lowestChunkIndex: 0,
 
   distance: 0,
   lastTime: performance.now()
@@ -150,7 +146,7 @@ function clamp(value, min, max) {
 }
 
 function seededRandom(seed) {
-  let value = Math.sin(seed * 9999.123) * 10000;
+  const value = Math.sin(seed * 9999.123) * 10000;
   return value - Math.floor(value);
 }
 
@@ -235,6 +231,7 @@ function createChunk(chunkIndex) {
   group.add(centerLine);
 
   const sideGeometry = new THREE.BoxGeometry(0.22, 0.45, chunkLength);
+
   const leftSide = new THREE.Mesh(sideGeometry, sideMaterial);
   leftSide.position.set(-trackWidth / 2 - 0.11, 0.225, zCenter);
   group.add(leftSide);
@@ -293,9 +290,6 @@ function updateChunks() {
       removeChunk(chunkIndex);
     }
   }
-
-  game.lowestChunkIndex = minChunk;
-  game.highestChunkIndex = maxChunk;
 }
 
 function resetGame() {
@@ -324,88 +318,101 @@ function resetGame() {
 
   updateChunks();
 
+  distanceText.textContent = "Distance: 0";
+
   statusText.textContent = game.started
-    ? "Running. Tilt to steer."
+    ? "Running. Tilt gently to steer."
     : "Waiting to start.";
 }
 
-function handleMotion(event) {
-  const acceleration = event.accelerationIncludingGravity;
+function handleOrientation(event) {
+  /*
+    DeviceOrientationEvent uses angles instead of raw acceleration.
 
-  if (!acceleration) {
+    beta: front/back tilt
+    gamma: left/right tilt
+
+    This is better when the phone is held naturally rather than lying flat.
+  */
+
+  if (event.beta === null || event.gamma === null) {
     return;
   }
 
-  game.rawX = acceleration.x || 0;
-  game.rawY = acceleration.y || 0;
-  game.hasMotionSample = true;
+  game.rawBeta = event.beta;
+  game.rawGamma = event.gamma;
 
   if (game.calibrating) {
     game.calibrationSamples.push({
-      x: game.rawX,
-      y: game.rawY
+      beta: game.rawBeta,
+      gamma: game.rawGamma
     });
 
     if (game.calibrationSamples.length >= 12) {
-      let sumX = 0;
-      let sumY = 0;
+      let sumBeta = 0;
+      let sumGamma = 0;
 
       for (const sample of game.calibrationSamples) {
-        sumX += sample.x;
-        sumY += sample.y;
+        sumBeta += sample.beta;
+        sumGamma += sample.gamma;
       }
 
-      game.neutralX = sumX / game.calibrationSamples.length;
-      game.neutralY = sumY / game.calibrationSamples.length;
+      game.neutralBeta = sumBeta / game.calibrationSamples.length;
+      game.neutralGamma = sumGamma / game.calibrationSamples.length;
+
       game.calibrating = false;
       game.started = true;
 
-      statusText.textContent = "Calibrated. Tilt to steer.";
       resetGame();
+      statusText.textContent = "Calibrated. Tilt gently to steer.";
     }
 
     return;
   }
 
-  const relativeX = game.rawX - game.neutralX;
-  const relativeY = game.rawY - game.neutralY;
+  const relativeBeta = game.rawBeta - game.neutralBeta;
+  const relativeGamma = game.rawGamma - game.neutralGamma;
 
   /*
-    This treats the phone angle at Start as neutral.
+    Reversed and softened controls.
 
-    relativeX steers left/right.
-    relativeY controls forward/back speed.
+    If left/right still feels backward, remove the negative sign from tiltX.
+    If forward/back still feels backward, remove the negative sign from tiltZ.
   */
-  game.tiltX = clamp(relativeX / 5.5, -1, 1);
-  game.tiltZ = clamp(relativeY / 5.5, -1, 1);
+
+  const tiltSensitivity = 24;
+
+  game.tiltX = clamp(-relativeGamma / tiltSensitivity, -1, 1);
+  game.tiltZ = clamp(-relativeBeta / tiltSensitivity, -1, 1);
 }
 
 async function startOrCalibrate() {
   try {
     if (
-      typeof DeviceMotionEvent !== "undefined" &&
-      typeof DeviceMotionEvent.requestPermission === "function"
+      typeof DeviceOrientationEvent !== "undefined" &&
+      typeof DeviceOrientationEvent.requestPermission === "function"
     ) {
-      const permission = await DeviceMotionEvent.requestPermission();
+      const permission = await DeviceOrientationEvent.requestPermission();
 
       if (permission !== "granted") {
-        statusText.textContent = "Motion permission was denied.";
+        statusText.textContent = "Motion/orientation permission was denied.";
         return;
       }
     }
 
-    window.removeEventListener("devicemotion", handleMotion, true);
-    window.addEventListener("devicemotion", handleMotion, true);
+    window.removeEventListener("deviceorientation", handleOrientation, true);
+    window.addEventListener("deviceorientation", handleOrientation, true);
 
     game.calibrating = true;
     game.calibrationSamples = [];
     game.started = false;
+    game.falling = false;
 
-    statusText.textContent = "Calibrating. Hold still for a moment.";
+    statusText.textContent = "Calibrating. Hold the phone naturally and still.";
   } catch (error) {
     console.error(error);
     statusText.textContent =
-      "Could not enable motion. Use HTTPS and test on iPhone Safari.";
+      "Could not enable orientation controls. Use HTTPS and test on iPhone Safari.";
   }
 }
 
@@ -418,6 +425,7 @@ function beginFall() {
   game.started = false;
   game.velocityX = 0;
   game.velocityZ = 0;
+
   statusText.textContent = "You fell. Tap Start / Calibrate to try again.";
 }
 
@@ -454,13 +462,13 @@ function updatePhysics(deltaSeconds) {
     return;
   }
 
-  const sideAcceleration = 18;
-  const forwardAcceleration = 5.5;
-  const baseForwardPush = 1.8;
+  const sideAcceleration = 9;
+  const forwardAcceleration = 2.5;
+  const baseForwardPush = 1.55;
   const friction = 0.982;
-  const maxSideSpeed = 7;
-  const minForwardSpeed = 2.4;
-  const maxForwardSpeed = 9.5;
+  const maxSideSpeed = 5.5;
+  const minForwardSpeed = 2.1;
+  const maxForwardSpeed = 7.25;
 
   game.velocityX += game.tiltX * sideAcceleration * deltaSeconds;
 
