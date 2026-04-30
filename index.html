@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>iPhone Motion Ball Test</title>
+  <link rel="stylesheet" href="style.css" />
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="ui">
+    <h1>Motion Ball Test</h1>
+    <p>
+      Tap the button, allow motion access, then tilt your iPhone to roll the ball.
+    </p>
+    <button id="enableMotionButton">Enable Motion Controls</button>
+    <button id="resetButton">Reset Ball</button>
+    <p id="status">Motion controls are not enabled yet.</p>
+  </div>
+
+  <canvas id="gameCanvas"></canvas>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
