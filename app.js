@@ -1,22 +1,21 @@
 import * as THREE from "three";
 
 const canvas = document.getElementById("gameCanvas");
-const enableMotionButton = document.getElementById("enableMotionButton");
+const startButton = document.getElementById("startButton");
 const resetButton = document.getElementById("resetButton");
 const statusText = document.getElementById("status");
+const distanceText = document.getElementById("distance");
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x111827);
+scene.background = new THREE.Color(0x020617);
+scene.fog = new THREE.Fog(0x020617, 18, 85);
 
 const camera = new THREE.PerspectiveCamera(
-  60,
+  62,
   window.innerWidth / window.innerHeight,
   0.1,
-  100
+  220
 );
-
-camera.position.set(0, 7, 8);
-camera.lookAt(0, 0, 0);
 
 const renderer = new THREE.WebGLRenderer({
   canvas,
@@ -26,32 +25,82 @@ const renderer = new THREE.WebGLRenderer({
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
 scene.add(ambientLight);
 
-const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5);
-directionalLight.position.set(4, 8, 5);
-scene.add(directionalLight);
+const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+sun.position.set(5, 10, 8);
+scene.add(sun);
 
-const floorSize = 12;
+const ballRadius = 0.5;
+const trackWidth = 10;
+const chunkLength = 12;
+const chunksAhead = 9;
+const chunksBehind = 4;
 
-const floorGeometry = new THREE.PlaneGeometry(floorSize, floorSize, 12, 12);
-const floorMaterial = new THREE.MeshStandardMaterial({
-  color: 0x1f2937,
+const safeStartChunks = 2;
+const holeRadiusMin = 0.55;
+const holeRadiusMax = 1.15;
+
+const game = {
+  started: false,
+  falling: false,
+
+  rawX: 0,
+  rawY: 0,
+
+  neutralX: 0,
+  neutralY: 0,
+  hasMotionSample: false,
+
+  calibrating: false,
+  calibrationSamples: [],
+
+  tiltX: 0,
+  tiltZ: 0,
+
+  velocityX: 0,
+  velocityZ: 2.8,
+
+  positionX: 0,
+  positionZ: 0,
+
+  highestChunkIndex: 0,
+  lowestChunkIndex: 0,
+
+  distance: 0,
+  lastTime: performance.now()
+};
+
+const chunks = new Map();
+const holes = [];
+
+const floorMaterialA = new THREE.MeshStandardMaterial({
+  color: 0x1e293b,
   roughness: 0.9,
-  metalness: 0.05,
-  side: THREE.DoubleSide
+  metalness: 0.05
 });
 
-const floor = new THREE.Mesh(floorGeometry, floorMaterial);
-floor.rotation.x = -Math.PI / 2;
-scene.add(floor);
+const floorMaterialB = new THREE.MeshStandardMaterial({
+  color: 0x263449,
+  roughness: 0.9,
+  metalness: 0.05
+});
 
-const grid = new THREE.GridHelper(floorSize, 12, 0x6b7280, 0x374151);
-grid.position.y = 0.01;
-scene.add(grid);
+const sideMaterial = new THREE.MeshStandardMaterial({
+  color: 0x0f172a,
+  roughness: 0.95
+});
 
-const ballRadius = 0.55;
+const holeMaterial = new THREE.MeshBasicMaterial({
+  color: 0x000000
+});
+
+const holeRimMaterial = new THREE.MeshBasicMaterial({
+  color: 0xef4444,
+  transparent: true,
+  opacity: 0.72
+});
 
 const ballGeometry = new THREE.IcosahedronGeometry(ballRadius, 2);
 const ballMaterial = new THREE.MeshStandardMaterial({
@@ -65,54 +114,219 @@ const ball = new THREE.Mesh(ballGeometry, ballMaterial);
 ball.position.set(0, ballRadius, 0);
 scene.add(ball);
 
-const boundaryMaterial = new THREE.MeshStandardMaterial({
-  color: 0x374151,
-  roughness: 0.8
-});
+function makeStarfield() {
+  const starGeometry = new THREE.BufferGeometry();
+  const starCount = 900;
+  const positions = [];
 
-const wallThickness = 0.2;
-const wallHeight = 0.45;
+  for (let i = 0; i < starCount; i++) {
+    positions.push(
+      THREE.MathUtils.randFloatSpread(140),
+      THREE.MathUtils.randFloat(18, 70),
+      THREE.MathUtils.randFloatSpread(180)
+    );
+  }
 
-function makeWall(x, z, width, depth) {
-  const wall = new THREE.Mesh(
-    new THREE.BoxGeometry(width, wallHeight, depth),
-    boundaryMaterial
+  starGeometry.setAttribute(
+    "position",
+    new THREE.Float32BufferAttribute(positions, 3)
   );
 
-  wall.position.set(x, wallHeight / 2, z);
-  scene.add(wall);
+  const starMaterial = new THREE.PointsMaterial({
+    color: 0xffffff,
+    size: 0.08,
+    transparent: true,
+    opacity: 0.65
+  });
+
+  const stars = new THREE.Points(starGeometry, starMaterial);
+  scene.add(stars);
 }
 
-makeWall(0, -floorSize / 2, floorSize, wallThickness);
-makeWall(0, floorSize / 2, floorSize, wallThickness);
-makeWall(-floorSize / 2, 0, wallThickness, floorSize);
-makeWall(floorSize / 2, 0, wallThickness, floorSize);
-
-const state = {
-  motionEnabled: false,
-  tiltX: 0,
-  tiltZ: 0,
-  velocityX: 0,
-  velocityZ: 0,
-  positionX: 0,
-  positionZ: 0,
-  lastTime: performance.now()
-};
+makeStarfield();
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function resetBall() {
-  state.velocityX = 0;
-  state.velocityZ = 0;
-  state.positionX = 0;
-  state.positionZ = 0;
-  state.tiltX = 0;
-  state.tiltZ = 0;
+function seededRandom(seed) {
+  let value = Math.sin(seed * 9999.123) * 10000;
+  return value - Math.floor(value);
+}
+
+function randomBetween(seed, min, max) {
+  return min + seededRandom(seed) * (max - min);
+}
+
+function createHole(chunkIndex, localIndex, zStart, group) {
+  const seedBase = chunkIndex * 100 + localIndex * 17;
+
+  const radius = randomBetween(seedBase + 1, holeRadiusMin, holeRadiusMax);
+  const x = randomBetween(
+    seedBase + 2,
+    -trackWidth / 2 + radius + 0.8,
+    trackWidth / 2 - radius - 0.8
+  );
+
+  const z = zStart + randomBetween(
+    seedBase + 3,
+    2.2,
+    chunkLength - 2.2
+  );
+
+  const circleSegments = 22;
+
+  const holeMesh = new THREE.Mesh(
+    new THREE.CircleGeometry(radius, circleSegments),
+    holeMaterial
+  );
+
+  holeMesh.rotation.x = -Math.PI / 2;
+  holeMesh.position.set(x, 0.035, z);
+  group.add(holeMesh);
+
+  const rimMesh = new THREE.Mesh(
+    new THREE.RingGeometry(radius * 0.98, radius * 1.12, circleSegments),
+    holeRimMaterial
+  );
+
+  rimMesh.rotation.x = -Math.PI / 2;
+  rimMesh.position.set(x, 0.04, z);
+  group.add(rimMesh);
+
+  holes.push({
+    chunkIndex,
+    x,
+    z,
+    radius
+  });
+}
+
+function createChunk(chunkIndex) {
+  if (chunks.has(chunkIndex)) {
+    return;
+  }
+
+  const group = new THREE.Group();
+
+  const zStart = chunkIndex * chunkLength;
+  const zCenter = zStart + chunkLength / 2;
+
+  const floorGeometry = new THREE.PlaneGeometry(trackWidth, chunkLength, 4, 4);
+  const floor = new THREE.Mesh(
+    floorGeometry,
+    chunkIndex % 2 === 0 ? floorMaterialA : floorMaterialB
+  );
+
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.set(0, 0, zCenter);
+  group.add(floor);
+
+  const lineGeometry = new THREE.PlaneGeometry(0.06, chunkLength);
+  const lineMaterial = new THREE.MeshBasicMaterial({
+    color: 0x64748b,
+    transparent: true,
+    opacity: 0.35
+  });
+
+  const centerLine = new THREE.Mesh(lineGeometry, lineMaterial);
+  centerLine.rotation.x = -Math.PI / 2;
+  centerLine.position.set(0, 0.025, zCenter);
+  group.add(centerLine);
+
+  const sideGeometry = new THREE.BoxGeometry(0.22, 0.45, chunkLength);
+  const leftSide = new THREE.Mesh(sideGeometry, sideMaterial);
+  leftSide.position.set(-trackWidth / 2 - 0.11, 0.225, zCenter);
+  group.add(leftSide);
+
+  const rightSide = new THREE.Mesh(sideGeometry, sideMaterial);
+  rightSide.position.set(trackWidth / 2 + 0.11, 0.225, zCenter);
+  group.add(rightSide);
+
+  const holesThisChunk =
+    chunkIndex < safeStartChunks
+      ? 0
+      : Math.floor(randomBetween(chunkIndex + 11, 1, 4));
+
+  for (let i = 0; i < holesThisChunk; i++) {
+    createHole(chunkIndex, i, zStart, group);
+  }
+
+  scene.add(group);
+  chunks.set(chunkIndex, group);
+}
+
+function removeChunk(chunkIndex) {
+  const group = chunks.get(chunkIndex);
+
+  if (!group) {
+    return;
+  }
+
+  group.traverse((object) => {
+    if (object.geometry) {
+      object.geometry.dispose();
+    }
+  });
+
+  scene.remove(group);
+  chunks.delete(chunkIndex);
+
+  for (let i = holes.length - 1; i >= 0; i--) {
+    if (holes[i].chunkIndex === chunkIndex) {
+      holes.splice(i, 1);
+    }
+  }
+}
+
+function updateChunks() {
+  const currentChunk = Math.floor(game.positionZ / chunkLength);
+  const minChunk = currentChunk - chunksBehind;
+  const maxChunk = currentChunk + chunksAhead;
+
+  for (let i = minChunk; i <= maxChunk; i++) {
+    createChunk(i);
+  }
+
+  for (const chunkIndex of Array.from(chunks.keys())) {
+    if (chunkIndex < minChunk || chunkIndex > maxChunk) {
+      removeChunk(chunkIndex);
+    }
+  }
+
+  game.lowestChunkIndex = minChunk;
+  game.highestChunkIndex = maxChunk;
+}
+
+function resetGame() {
+  game.falling = false;
+  game.velocityX = 0;
+  game.velocityZ = 2.8;
+  game.positionX = 0;
+  game.positionZ = 0;
+  game.distance = 0;
+  game.tiltX = 0;
+  game.tiltZ = 0;
 
   ball.position.set(0, ballRadius, 0);
   ball.rotation.set(0, 0, 0);
+  ball.scale.set(1, 1, 1);
+
+  for (const chunkIndex of Array.from(chunks.keys())) {
+    removeChunk(chunkIndex);
+  }
+
+  holes.length = 0;
+
+  for (let i = -1; i <= chunksAhead; i++) {
+    createChunk(i);
+  }
+
+  updateChunks();
+
+  statusText.textContent = game.started
+    ? "Running. Tilt to steer."
+    : "Waiting to start.";
 }
 
 function handleMotion(event) {
@@ -122,22 +336,51 @@ function handleMotion(event) {
     return;
   }
 
-  const rawX = acceleration.x || 0;
-  const rawY = acceleration.y || 0;
+  game.rawX = acceleration.x || 0;
+  game.rawY = acceleration.y || 0;
+  game.hasMotionSample = true;
+
+  if (game.calibrating) {
+    game.calibrationSamples.push({
+      x: game.rawX,
+      y: game.rawY
+    });
+
+    if (game.calibrationSamples.length >= 12) {
+      let sumX = 0;
+      let sumY = 0;
+
+      for (const sample of game.calibrationSamples) {
+        sumX += sample.x;
+        sumY += sample.y;
+      }
+
+      game.neutralX = sumX / game.calibrationSamples.length;
+      game.neutralY = sumY / game.calibrationSamples.length;
+      game.calibrating = false;
+      game.started = true;
+
+      statusText.textContent = "Calibrated. Tilt to steer.";
+      resetGame();
+    }
+
+    return;
+  }
+
+  const relativeX = game.rawX - game.neutralX;
+  const relativeY = game.rawY - game.neutralY;
 
   /*
-    Portrait iPhone mapping:
-    rawX controls left/right tilt.
-    rawY controls forward/back tilt.
+    This treats the phone angle at Start as neutral.
 
-    The signs below are chosen to feel natural:
-    tilt right rolls right, tilt top away rolls forward.
+    relativeX steers left/right.
+    relativeY controls forward/back speed.
   */
-  state.tiltX = clamp(rawX / 9.8, -1, 1);
-  state.tiltZ = clamp(rawY / 9.8, -1, 1);
+  game.tiltX = clamp(relativeX / 5.5, -1, 1);
+  game.tiltZ = clamp(relativeY / 5.5, -1, 1);
 }
 
-async function enableMotionControls() {
+async function startOrCalibrate() {
   try {
     if (
       typeof DeviceMotionEvent !== "undefined" &&
@@ -151,66 +394,136 @@ async function enableMotionControls() {
       }
     }
 
+    window.removeEventListener("devicemotion", handleMotion, true);
     window.addEventListener("devicemotion", handleMotion, true);
 
-    state.motionEnabled = true;
-    statusText.textContent = "Motion controls enabled. Tilt your iPhone.";
+    game.calibrating = true;
+    game.calibrationSamples = [];
+    game.started = false;
+
+    statusText.textContent = "Calibrating. Hold still for a moment.";
   } catch (error) {
     console.error(error);
     statusText.textContent =
-      "Could not enable motion controls. Make sure this is running over HTTPS on an iPhone.";
+      "Could not enable motion. Use HTTPS and test on iPhone Safari.";
+  }
+}
+
+function beginFall() {
+  if (game.falling) {
+    return;
+  }
+
+  game.falling = true;
+  game.started = false;
+  game.velocityX = 0;
+  game.velocityZ = 0;
+  statusText.textContent = "You fell. Tap Start / Calibrate to try again.";
+}
+
+function checkHazards() {
+  const edgeLimit = trackWidth / 2 - ballRadius * 0.6;
+
+  if (game.positionX < -edgeLimit || game.positionX > edgeLimit) {
+    beginFall();
+    return;
+  }
+
+  for (const hole of holes) {
+    const dx = game.positionX - hole.x;
+    const dz = game.positionZ - hole.z;
+    const distance = Math.sqrt(dx * dx + dz * dz);
+
+    if (distance < hole.radius + ballRadius * 0.35) {
+      beginFall();
+      return;
+    }
   }
 }
 
 function updatePhysics(deltaSeconds) {
-  const accelerationStrength = 14;
-  const friction = 0.965;
-  const maxSpeed = 7;
-  const playableLimit = floorSize / 2 - ballRadius - wallThickness;
-
-  state.velocityX += state.tiltX * accelerationStrength * deltaSeconds;
-  state.velocityZ += state.tiltZ * accelerationStrength * deltaSeconds;
-
-  state.velocityX *= friction;
-  state.velocityZ *= friction;
-
-  state.velocityX = clamp(state.velocityX, -maxSpeed, maxSpeed);
-  state.velocityZ = clamp(state.velocityZ, -maxSpeed, maxSpeed);
-
-  state.positionX += state.velocityX * deltaSeconds;
-  state.positionZ += state.velocityZ * deltaSeconds;
-
-  if (state.positionX < -playableLimit || state.positionX > playableLimit) {
-    state.positionX = clamp(state.positionX, -playableLimit, playableLimit);
-    state.velocityX *= -0.45;
+  if (game.falling) {
+    ball.position.y -= 7 * deltaSeconds;
+    ball.rotation.x += 4 * deltaSeconds;
+    ball.rotation.z += 2 * deltaSeconds;
+    ball.scale.multiplyScalar(0.992);
+    return;
   }
 
-  if (state.positionZ < -playableLimit || state.positionZ > playableLimit) {
-    state.positionZ = clamp(state.positionZ, -playableLimit, playableLimit);
-    state.velocityZ *= -0.45;
+  if (!game.started) {
+    return;
   }
 
-  ball.position.x = state.positionX;
-  ball.position.z = state.positionZ;
+  const sideAcceleration = 18;
+  const forwardAcceleration = 5.5;
+  const baseForwardPush = 1.8;
+  const friction = 0.982;
+  const maxSideSpeed = 7;
+  const minForwardSpeed = 2.4;
+  const maxForwardSpeed = 9.5;
 
-  const rollAmountX = state.velocityZ * deltaSeconds / ballRadius;
-  const rollAmountZ = -state.velocityX * deltaSeconds / ballRadius;
+  game.velocityX += game.tiltX * sideAcceleration * deltaSeconds;
 
-  ball.rotation.x += rollAmountX;
-  ball.rotation.z += rollAmountZ;
+  game.velocityZ +=
+    (baseForwardPush + game.tiltZ * forwardAcceleration) * deltaSeconds;
+
+  game.velocityX *= friction;
+  game.velocityZ *= 0.993;
+
+  game.velocityX = clamp(game.velocityX, -maxSideSpeed, maxSideSpeed);
+  game.velocityZ = clamp(game.velocityZ, minForwardSpeed, maxForwardSpeed);
+
+  game.positionX += game.velocityX * deltaSeconds;
+  game.positionZ += game.velocityZ * deltaSeconds;
+
+  ball.position.x = game.positionX;
+  ball.position.y = ballRadius;
+  ball.position.z = game.positionZ;
+
+  const rollX = game.velocityZ * deltaSeconds / ballRadius;
+  const rollZ = -game.velocityX * deltaSeconds / ballRadius;
+
+  ball.rotation.x += rollX;
+  ball.rotation.z += rollZ;
+
+  game.distance = Math.max(game.distance, game.positionZ);
+  distanceText.textContent = `Distance: ${Math.floor(game.distance)}`;
+
+  updateChunks();
+  checkHazards();
+}
+
+function updateCamera(deltaSeconds) {
+  const targetCameraPosition = new THREE.Vector3(
+    game.positionX * 0.45,
+    6.8,
+    game.positionZ - 8
+  );
+
+  camera.position.lerp(targetCameraPosition, 1 - Math.pow(0.001, deltaSeconds));
+
+  const lookTarget = new THREE.Vector3(
+    game.positionX * 0.4,
+    0.8,
+    game.positionZ + 4
+  );
+
+  camera.lookAt(lookTarget);
 }
 
 function animate(currentTime) {
   requestAnimationFrame(animate);
 
   const deltaSeconds = Math.min(
-    (currentTime - state.lastTime) / 1000,
+    (currentTime - game.lastTime) / 1000,
     1 / 30
   );
 
-  state.lastTime = currentTime;
+  game.lastTime = currentTime;
 
   updatePhysics(deltaSeconds);
+  updateCamera(deltaSeconds);
+
   renderer.render(scene, camera);
 }
 
@@ -222,8 +535,9 @@ function handleResize() {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 }
 
-enableMotionButton.addEventListener("click", enableMotionControls);
-resetButton.addEventListener("click", resetBall);
+startButton.addEventListener("click", startOrCalibrate);
+resetButton.addEventListener("click", resetGame);
 window.addEventListener("resize", handleResize);
 
+resetGame();
 animate(performance.now());
